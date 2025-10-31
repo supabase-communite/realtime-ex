@@ -254,6 +254,16 @@ defmodule Supabase.Realtime do
   @type ref :: String.t()
 
   @typedoc """
+  Acknowledgment reference type used for tracking broadcast acknowledgments.
+  """
+  @type ack_ref :: String.t()
+
+  @typedoc """
+  Acknowledgment response types.
+  """
+  @type ack_response :: {:ok, :acknowledged} | {:error, :timeout} | {:error, :not_supported}
+
+  @typedoc """
   Realtime message payload structure.
   """
   @type realtime_message :: %{
@@ -440,6 +450,48 @@ defmodule Supabase.Realtime do
         with {:ok, conn} <- Realtime.fetch_connection(__MODULE__) do
           Realtime.broadcast(conn, channel, event, payload)
         end
+      end
+
+      @doc """
+      Send a broadcast message to a channel with acknowledgment support.
+
+      If acknowledgments are enabled on the channel, returns an acknowledgment reference
+      that can be used with `wait_for_ack/2` to wait for delivery confirmation.
+
+      ## Parameters
+
+      * `channel` - The channel struct
+      * `event` - The event name
+      * `payload` - The message payload
+
+      ## Returns
+
+      * `{:ok, ack_ref}` - When acknowledgments are enabled
+      * `:ok` - When acknowledgments are disabled
+      * `{:error, term()}` - When an error occurs
+      """
+      def broadcast_with_ack(channel, event, payload) do
+        with {:ok, conn} <- Realtime.fetch_connection(__MODULE__) do
+          Realtime.broadcast_with_ack(conn, channel, event, payload)
+        end
+      end
+
+      @doc """
+      Wait for an acknowledgment for a broadcast message.
+
+      ## Parameters
+
+      * `ack_ref` - The acknowledgment reference returned by `broadcast_with_ack/3`
+      * `opts` - Options including `:timeout` (default: 5000ms)
+
+      ## Returns
+
+      * `{:ok, :acknowledged}` - Message was acknowledged
+      * `{:error, :timeout}` - No acknowledgment received within timeout
+      * `{:error, :not_supported}` - Channel doesn't support acknowledgments
+      """
+      def wait_for_ack(ack_ref, opts \\ []) do
+        Realtime.wait_for_ack(ack_ref, opts)
       end
     end
   end
@@ -668,6 +720,79 @@ defmodule Supabase.Realtime do
   end
 
   @doc """
+  Sends a broadcast message to a channel with acknowledgment support.
+
+  This function sends a broadcast message and optionally returns an acknowledgment
+  reference if acknowledgments are enabled on the channel.
+
+  ## Parameters
+
+  * `conn` - The connection PID or name
+  * `channel` - The channel struct
+  * `event` - The event name
+  * `payload` - The message payload
+
+  ## Returns
+
+  * `{:ok, ack_ref}` - Successfully sent with acknowledgment enabled
+  * `:ok` - Successfully sent without acknowledgment
+  * `{:error, term()}` - Failed to send the broadcast
+  """
+  @spec broadcast_with_ack(pid() | module(), channel(), String.t(), map()) :: 
+          {:ok, ack_ref()} | :ok | {:error, term()}
+  def broadcast_with_ack(conn, %Channel{} = channel, event, payload) when is_binary(event) and is_map(payload) do
+    with pid when is_pid(pid) <- ensure_pid(conn) do
+      if Channel.ack_enabled?(channel) do
+        ack_ref = generate_ack_ref()
+        message = Message.broadcast_message_with_ack(channel, event, payload, ack_ref)
+        
+        case Realtime.Connection.send_message_with_ack(pid, channel, message, ack_ref) do
+          :ok -> {:ok, ack_ref}
+          error -> error
+        end
+      else
+        message = Message.broadcast_message(channel, event, payload)
+        case Realtime.Connection.send_message(pid, channel, message) do
+          :ok -> :ok
+          error -> error
+        end
+      end
+    end
+  end
+
+  @doc """
+  Wait for an acknowledgment for a broadcast message.
+
+  This function blocks the calling process until an acknowledgment is received
+  or a timeout occurs.
+
+  ## Parameters
+
+  * `ack_ref` - The acknowledgment reference
+  * `opts` - Options including `:timeout` (default: 5000ms)
+
+  ## Returns
+
+  * `{:ok, :acknowledged}` - Message was acknowledged
+  * `{:error, :timeout}` - No acknowledgment received within timeout
+  * `{:error, :not_found}` - Acknowledgment reference not found
+  """
+  @spec wait_for_ack(ack_ref(), keyword()) :: ack_response()
+  def wait_for_ack(ack_ref, opts \\ []) when is_binary(ack_ref) do
+    timeout = Keyword.get(opts, :timeout, 5000)
+    
+    receive do
+      {:ack_received, ^ack_ref} -> 
+        {:ok, :acknowledged}
+      {:ack_timeout, ^ack_ref} -> 
+        {:error, :timeout}
+    after
+      timeout -> 
+        {:error, :timeout}
+    end
+  end
+
+  @doc """
   Removes all channel subscriptions.
 
   ## Parameters
@@ -733,4 +858,9 @@ defmodule Supabase.Realtime do
   defp ensure_pid(client) when is_pid(client), do: client
   defp ensure_pid(client) when is_atom(client), do: Process.whereis(client)
   defp ensure_pid(_), do: {:error, :invalid_client}
+
+  # Helper function to generate acknowledgment references
+  defp generate_ack_ref do
+    "ack:" <> (16 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower))
+  end
 end

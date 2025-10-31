@@ -179,6 +179,44 @@ defmodule Supabase.Realtime.Channel.Store do
     GenServer.call(store, {:find_all_by_topic, topic})
   end
 
+  @doc """
+  Adds a pending acknowledgment to a channel.
+
+  ## Parameters
+
+  * `store` - The store process
+  * `channel` - The channel to update
+  * `ack_ref` - The acknowledgment reference
+  * `caller` - The process that will receive the acknowledgment
+  """
+  def add_pending_ack(store \\ __MODULE__, %Channel{} = channel, ack_ref, caller) do
+    GenServer.call(store, {:add_pending_ack, channel, ack_ref, caller})
+  end
+
+  @doc """
+  Handles when an acknowledgment is received from the server.
+
+  ## Parameters
+
+  * `store` - The store process
+  * `ack_ref` - The acknowledgment reference
+  """
+  def handle_ack_received(store \\ __MODULE__, ack_ref) when is_binary(ack_ref) do
+    GenServer.call(store, {:handle_ack_received, ack_ref})
+  end
+
+  @doc """
+  Handles when an acknowledgment times out.
+
+  ## Parameters
+
+  * `store` - The store process
+  * `ack_ref` - The acknowledgment reference
+  """
+  def handle_ack_timeout(store \\ __MODULE__, ack_ref) when is_binary(ack_ref) do
+    GenServer.call(store, {:handle_ack_timeout, ack_ref})
+  end
+
   # Server callbacks
 
   @impl true
@@ -287,11 +325,68 @@ defmodule Supabase.Realtime.Channel.Store do
   end
 
   @impl true
+  def handle_call({:add_pending_ack, %Channel{} = channel, ack_ref, caller}, _from, state) do
+    updated_channel = Channel.add_pending_ack(channel, ack_ref, caller)
+    :ets.insert(state.table, {channel.ref, updated_channel, channel.topic, channel.join_ref})
+
+    {:reply, {:ok, updated_channel}, state}
+  end
+
+  @impl true
+  def handle_call({:handle_ack_received, ack_ref}, _from, state) do
+    # Find the channel with this ack_ref in pending_acks
+    case find_channel_with_ack(state.table, ack_ref) do
+      {:ok, channel} ->
+        case Channel.get_ack_caller(channel, ack_ref) do
+          {:ok, caller} ->
+            updated_channel = Channel.remove_pending_ack(channel, ack_ref)
+            :ets.insert(state.table, {channel.ref, updated_channel, channel.topic, channel.join_ref})
+            {:reply, {:ok, caller}, state}
+          :error ->
+            {:reply, :error, state}
+        end
+      :error ->
+        {:reply, :error, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:handle_ack_timeout, ack_ref}, _from, state) do
+    # Find the channel with this ack_ref in pending_acks
+    case find_channel_with_ack(state.table, ack_ref) do
+      {:ok, channel} ->
+        case Channel.get_ack_caller(channel, ack_ref) do
+          {:ok, caller} ->
+            updated_channel = Channel.remove_pending_ack(channel, ack_ref)
+            :ets.insert(state.table, {channel.ref, updated_channel, channel.topic, channel.join_ref})
+            {:reply, {:ok, caller}, state}
+          :error ->
+            {:reply, :error, state}
+        end
+      :error ->
+        {:reply, :error, state}
+    end
+  end
+
+  @impl true
   def terminate(_reason, state) do
     if state.table && :ets.info(state.table) != :undefined do
       :ets.delete(state.table)
     end
 
     :ok
+  end
+
+  # Private helper functions
+
+  defp find_channel_with_ack(table, ack_ref) do
+    channels = :ets.select(table, [{{:_, :"$1", :_, :_}, [], [:"$1"]}])
+    
+    case Enum.find(channels, fn channel -> 
+      Map.has_key?(channel.pending_acks, ack_ref)
+    end) do
+      nil -> :error
+      channel -> {:ok, channel}
+    end
   end
 end
