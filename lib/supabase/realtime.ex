@@ -738,24 +738,18 @@ defmodule Supabase.Realtime do
   * `:ok` - Successfully sent without acknowledgment
   * `{:error, term()}` - Failed to send the broadcast
   """
-  @spec broadcast_with_ack(pid() | module(), channel(), String.t(), map()) :: 
+  @spec broadcast_with_ack(pid() | module(), channel(), String.t(), map()) ::
           {:ok, ack_ref()} | :ok | {:error, term()}
   def broadcast_with_ack(conn, %Channel{} = channel, event, payload) when is_binary(event) and is_map(payload) do
     with pid when is_pid(pid) <- ensure_pid(conn) do
       if Channel.ack_enabled?(channel) do
         ack_ref = generate_ack_ref()
         message = Message.broadcast_message_with_ack(channel, event, payload, ack_ref)
-        
-        case Realtime.Connection.send_message_with_ack(pid, channel, message, ack_ref) do
-          :ok -> {:ok, ack_ref}
-          error -> error
-        end
+
+        with :ok <- Realtime.Connection.send_message_with_ack(pid, channel, message, ack_ref), do: {:ok, ack_ref}
       else
         message = Message.broadcast_message(channel, event, payload)
-        case Realtime.Connection.send_message(pid, channel, message) do
-          :ok -> :ok
-          error -> error
-        end
+        Realtime.Connection.send_message(pid, channel, message)
       end
     end
   end
@@ -780,14 +774,15 @@ defmodule Supabase.Realtime do
   @spec wait_for_ack(ack_ref(), keyword()) :: ack_response()
   def wait_for_ack(ack_ref, opts \\ []) when is_binary(ack_ref) do
     timeout = Keyword.get(opts, :timeout, 5000)
-    
+
     receive do
-      {:ack_received, ^ack_ref} -> 
+      {:ack_received, ^ack_ref} ->
         {:ok, :acknowledged}
-      {:ack_timeout, ^ack_ref} -> 
+
+      {:ack_timeout, ^ack_ref} ->
         {:error, :timeout}
     after
-      timeout -> 
+      timeout ->
         {:error, :timeout}
     end
   end

@@ -306,6 +306,7 @@ defmodule Supabase.Realtime.Channel do
       caller: caller,
       timer: Process.send_after(self(), {:ack_timeout, ack_ref}, channel.timeout)
     }
+
     %{channel | pending_acks: Map.put(channel.pending_acks, ack_ref, ack_info)}
   end
 

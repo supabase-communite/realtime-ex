@@ -335,16 +335,12 @@ defmodule Supabase.Realtime.Channel.Store do
   @impl true
   def handle_call({:handle_ack_received, ack_ref}, _from, state) do
     # Find the channel with this ack_ref in pending_acks
-    case find_channel_with_ack(state.table, ack_ref) do
-      {:ok, channel} ->
-        case Channel.get_ack_caller(channel, ack_ref) do
-          {:ok, caller} ->
-            updated_channel = Channel.remove_pending_ack(channel, ack_ref)
-            :ets.insert(state.table, {channel.ref, updated_channel, channel.topic, channel.join_ref})
-            {:reply, {:ok, caller}, state}
-          :error ->
-            {:reply, :error, state}
-        end
+    with {:ok, channel} <- find_channel_with_ack(state.table, ack_ref),
+         {:ok, caller} <- Channel.get_ack_caller(channel, ack_ref) do
+      updated_channel = Channel.remove_pending_ack(channel, ack_ref)
+      :ets.insert(state.table, {channel.ref, updated_channel, channel.topic, channel.join_ref})
+      {:reply, {:ok, caller}, state}
+    else
       :error ->
         {:reply, :error, state}
     end
@@ -353,16 +349,12 @@ defmodule Supabase.Realtime.Channel.Store do
   @impl true
   def handle_call({:handle_ack_timeout, ack_ref}, _from, state) do
     # Find the channel with this ack_ref in pending_acks
-    case find_channel_with_ack(state.table, ack_ref) do
-      {:ok, channel} ->
-        case Channel.get_ack_caller(channel, ack_ref) do
-          {:ok, caller} ->
-            updated_channel = Channel.remove_pending_ack(channel, ack_ref)
-            :ets.insert(state.table, {channel.ref, updated_channel, channel.topic, channel.join_ref})
-            {:reply, {:ok, caller}, state}
-          :error ->
-            {:reply, :error, state}
-        end
+    with {:ok, channel} <- find_channel_with_ack(state.table, ack_ref),
+         {:ok, caller} <- Channel.get_ack_caller(channel, ack_ref) do
+      updated_channel = Channel.remove_pending_ack(channel, ack_ref)
+      :ets.insert(state.table, {channel.ref, updated_channel, channel.topic, channel.join_ref})
+      {:reply, {:ok, caller}, state}
+    else
       :error ->
         {:reply, :error, state}
     end
@@ -381,12 +373,14 @@ defmodule Supabase.Realtime.Channel.Store do
 
   defp find_channel_with_ack(table, ack_ref) do
     channels = :ets.select(table, [{{:_, :"$1", :_, :_}, [], [:"$1"]}])
-    
-    case Enum.find(channels, fn channel -> 
-      Map.has_key?(channel.pending_acks, ack_ref)
-    end) do
-      nil -> :error
-      channel -> {:ok, channel}
+
+    if channel =
+         Enum.find(channels, fn channel ->
+           Map.has_key?(channel.pending_acks, ack_ref)
+         end) do
+      {:ok, channel}
+    else
+      :error
     end
   end
 end
